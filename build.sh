@@ -4,21 +4,26 @@ set -eo pipefail
 
 DISK=$1
 BU=$2
+ARCH=${3:-x86_64}
+RPI=$4
+
+FCOS_BUILD=34.20210821.3.0
+IMAGE=fedora-coreos-${FCOS_BUILD}-metal.${ARCH}.raw.xz
+IMAGE_URL=https://builds.coreos.fedoraproject.org/prod/streams/stable/builds/${FCOS_BUILD}/${ARCH}/${IMAGE}
 
 MOUNT_DIR=/mnt/fcos
 TMP_DIR=/tmp/fcos
 
-FCOS_BUILD=34.20210821.20.1
-IMAGE=fedora-coreos-${FCOS_BUILD}-metal.aarch64.raw.xz
-IMAGE_URL=https://builds.coreos.fedoraproject.org/prod/streams/testing-devel/builds/${FCOS_BUILD}/aarch64/${IMAGE}
+if [[ -n "${RPI}" ]]; then
+	echo "imaging for RPi"
+	FIRMWARE_VERSION=1.29
+	FIRMWARE=RPi4_UEFI_Firmware_v${FIRMWARE_VERSION}.zip
+	FIRMWARE_URL=https://github.com/pftf/RPi4/releases/download/v${FIRMWARE_VERSION}/${FIRMWARE}
+fi
 
-FIRMWARE_VERSION=1.29
-FIRMWARE=RPi4_UEFI_Firmware_v${FIRMWARE_VERSION}.zip
-FIRMWARE_URL=https://github.com/pftf/RPi4/releases/download/v${FIRMWARE_VERSION}/${FIRMWARE}
-
-if [[ -z ${DISK} ]] || [[ -z ${BU} ]]; then
-	echo "error: supply disk to image and/or path to butane config file"
-	echo "usage: $(basename $(readlink -nf "$0")) /dev/sda /tmp/fc.yaml"
+if [[ -z ${DISK} ]] || [[ -z ${BU} ]] || [[ ! ${ARCH} == @(x86_64|aarch64) ]]; then
+	echo "error: supply disk to image, path to butane config file and optionally the arch"
+	echo "usage: $(basename $(readlink -nf "$0")) /dev/sda /tmp/fc.yaml aarch64 rpi"
 	exit 1
 fi
 
@@ -46,25 +51,22 @@ trap cleanup EXIT
 mkdir ${MOUNT_DIR} ${TMP_DIR}
 pushd ${TMP_DIR}
 
-set -x
-
-wget ${FIRMWARE_URL}
-
+echo "Executing butane on ${BU}"
 podman run \
 	--rm -v "${BU}":/config.bu:z \
 	quay.io/coreos/butane:release --pretty --strict /config.bu >"${IGN}"
 
+echo "Downloading FCOS ${FCOS_BUILD} and writing it to ${DISK}"
 podman run \
 	--privileged --rm \
 	-v /dev:/dev -v /run/udev:/run/udev \
 	-v .:/data -w /data \
 	quay.io/coreos/coreos-installer:release install "${DISK}" -i "${IGN}" -u ${IMAGE_URL}
 
-mount "${DISK}"2 ${MOUNT_DIR}
-unzip ${FIRMWARE} -d ${MOUNT_DIR}
-umount ${MOUNT_DIR}
-
-set +x
-
-echo "Complete! Remove the disk and try booting!"
-echo "After booting, a reboot is required to remove the 3GB ram limit"
+if [[ -n ${RPI} ]]; then
+	echo "Downloading RPi firmware (${FIRMWARE_VERSION}) and writing to ${DISK}2"
+	wget ${FIRMWARE_URL}
+	mount "${DISK}"2 ${MOUNT_DIR}
+	unzip ${FIRMWARE} -d ${MOUNT_DIR}
+	umount ${MOUNT_DIR}
+fi
